@@ -9,7 +9,7 @@ logger.info('Importing pretrained model...')
 
 # Import model
 model = CatBoostClassifier()
-model.load_model('./models/my_catboost.cbm')
+model.load_model('./models/model.cbm')
 
 # Define optimal threshold
 model_th = 0.98
@@ -21,18 +21,8 @@ def make_pred(dt, source_info="kafka"):
     print(dt.dtypes)
 
     # Меняем формат категориальных фичей на string перед скорингом
-    expected_categorical = ['hour',
-                            'year',
-                            'month',
-                            'day_of_month',
-                            'day_of_week',
-                            'gender_cat',
-                            'merch_cat',
-                            'cat_id_cat',
-                            'one_city_cat',
-                            'us_state_cat',
-                            'jobs_cat']
-    for col in expected_categorical:
+    cat_cols = ['gender', 'merch', 'cat_id', 'one_city', 'us_state', 'jobs', 'street', 'name']
+    for col in cat_cols:
         if col in dt.columns:
             dt[col] = dt[col].astype(str)
 

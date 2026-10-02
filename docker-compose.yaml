@@ -1,7 +1,7 @@
 services:
   # Zookeeper (обязательный для Kafka)
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.0
+    image: confluentinc/cp-zookeeper:7.5.0
     networks:
       - ml-scorer
     environment:
@@ -12,7 +12,7 @@ services:
 
   # Сервис Kafka
   kafka:
-    image: confluentinc/cp-kafka:7.3.0
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
       - zookeeper
     networks:
@@ -35,7 +35,7 @@ services:
 
   # Сервис для создания топиков при старте
   kafka-setup:
-    image: confluentinc/cp-kafka:7.3.0
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
       kafka:
         condition: service_healthy  # Ждем пока Kafka станет здоровой
@@ -91,10 +91,45 @@ services:
     environment:
       KAFKA_BROKERS: "kafka:9092"  # Используем внутренний адрес Kafka
       KAFKA_TOPIC: "transactions"
+      DATABASE_URL: postgresql://writer:pass@postgres:5432/scoring
     depends_on:
-      - kafka
+      - writer
     ports:
       - "8501:8501"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: writer
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: scoring
+    ports:
+      - "5432:5432"
+    networks:
+      - ml-scorer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U writer -d scoring"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  writer:
+    build: ./writer
+    networks:
+    - ml-scorer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      KAFKA_SCORING_TOPIC: "scoring"
+      DATABASE_URL: postgresql://writer:pass@postgres:5432/scoring
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      
 
 networks:
   ml-scorer:

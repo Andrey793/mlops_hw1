@@ -5,12 +5,15 @@ import json
 import time
 import os
 import uuid
+import psycopg
+import altair as alt
 
 # Конфигурация Kafka
 KAFKA_CONFIG = {
     "bootstrap_servers": os.getenv("KAFKA_BROKERS", "kafka:9092"),
     "topic": os.getenv("KAFKA_TOPIC", "transactions")
 }
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://writer:pass@postgres:5432/scoring")
 
 def load_file(uploaded_file):
     """Загрузка CSV файла в DataFrame"""
@@ -100,3 +103,52 @@ if st.session_state.uploaded_files:
                             st.rerun()
                 else:
                     st.error("Файл не содержит данных")
+
+
+@st.cache_resource
+def connect(retries=10, delay=2):
+    for _ in range(retries):
+        try:
+            return psycopg.connect(DATABASE_URL, autocommit=True)
+        except psycopg.OperationalError:
+            time.sleep(delay)
+    raise RuntimeError("Could not connect to Postgres")
+
+def fetch_df(query):
+    """Выполнение SQL-запроса и возврат результата в DataFrame"""
+    with connect().cursor() as cur:
+        cur.execute(query)
+        cols = [d.name for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+# Проверка результатов
+st.divider()
+if st.button("Check results", key="check_results"):
+    try:
+        last_fraud = fetch_df("""
+            SELECT transaction_id, score
+            FROM scores
+            WHERE fraud_flag = TRUE
+            ORDER BY id DESC
+            LIMIT 10
+        """)
+        last_scores = fetch_df("""
+            SELECT score
+            FROM scores
+            ORDER BY id DESC
+            LIMIT 100
+        """)
+
+        st.subheader("Последние 10 мошеннических транзакций")
+        st.dataframe(last_fraud, hide_index=True)
+
+        st.subheader("Распределение скоров (последние 100)")
+        st.altair_chart(
+            alt.Chart(last_scores).mark_bar().encode(
+                x=alt.X("score:Q", bin=alt.Bin(maxbins=20), title="score"),
+                y=alt.Y("count()", title="count"),
+            ),
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.error(f"Ошибка чтения из БД: {str(e)}")
