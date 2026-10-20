@@ -1,0 +1,6 @@
+pandas<3
+catboost
+psycopg2-binary
+pyarrow
+scikit-learn
+pendulum

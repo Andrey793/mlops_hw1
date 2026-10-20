@@ -1,37 +1,57 @@
 import pandas as pd
 import logging
 from catboost import CatBoostClassifier
+import os
+import json
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
 
-logger.info('Importing pretrained model...')
+MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/model.cbm")
+MODEL_META_PATH = os.path.join(os.path.dirname(MODEL_PATH), "model_meta.json")
+_model, _mtime = None, 0.0
 
-# Import model
-model = CatBoostClassifier()
-model.load_model('./models/model.cbm')
+
+def model_version():
+    """Версия из model_meta.json, который пишет publish; у стартовой модели его нет."""
+    try:
+        with open(MODEL_META_PATH) as f:
+            return json.load(f)["version"]
+    except (OSError, ValueError, KeyError):
+        return "baseline"
+
+
+def get_model():
+    """Загружает модель и перечитывает её, если publish заменил файл."""
+    global _model, _mtime
+    # publish меняет сначала модель, потом meta
+    mtime = os.path.getmtime(MODEL_PATH)
+    if os.path.exists(MODEL_META_PATH):
+        mtime = max(mtime, os.path.getmtime(MODEL_META_PATH))
+    if _model is None or mtime > _mtime:
+        m = CatBoostClassifier()
+        m.load_model(MODEL_PATH)
+        _model, _mtime = m, mtime
+        logger.info("Loaded model %s (version %s, mtime %s)", MODEL_PATH, model_version(), mtime)
+    return _model
 
 # Define optimal threshold
 model_th = 0.98
-logger.info('Pretrained model imported successfully...')
 
 
 def make_pred(dt, source_info="kafka"):
-
-    print(dt.dtypes)
-
-    # Меняем формат категориальных фичей на string перед скорингом
+    model = get_model()
+    dt = dt[model.feature_names_].copy()
     cat_cols = ['gender', 'merch', 'cat_id', 'one_city', 'us_state', 'jobs', 'street', 'name']
     for col in cat_cols:
         if col in dt.columns:
             dt[col] = dt[col].astype(str)
 
-    # Calculate score
+    proba = model.predict_proba(dt)[:, 1]
     submission = pd.DataFrame({
-        'score':  model.predict_proba(dt)[:, 1],
-        'fraud_flag': (model.predict_proba(dt)[:, 1] > model_th) * 1
+        'score':  proba,
+        'fraud_flag': (proba > model_th) * 1
     })
     logger.info(f'Prediction complete for data from {source_info}')
 
-    # Return proba for positive class
     return submission

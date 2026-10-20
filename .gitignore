@@ -1,0 +1,6 @@
+.env
+logs/
+__pycache__/
+catboost_info/
+*.parquet
+*.csv

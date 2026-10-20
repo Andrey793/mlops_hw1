@@ -3,7 +3,7 @@ import logging
 import json
 import psycopg
 import time
-from confluent_kafka import Consumer, Producer, KafkaError
+from confluent_kafka import Consumer
 
 
 logging.basicConfig(
@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Set kafka configuration file
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
 SCORING_TOPIC = os.getenv("KAFKA_SCORING_TOPIC", "scoring")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://writer:pass@postgres:5432/scoring")
 
@@ -43,7 +43,8 @@ class ProcessingService:
         self.consumer_config = {
             'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
             'group.id': 'writer',
-            'auto.offset.reset': 'earliest'
+            'auto.offset.reset': 'earliest',
+            "enable.auto.commit": False
         }
         self.consumer = Consumer(self.consumer_config)
         self.consumer.subscribe([SCORING_TOPIC])
@@ -63,16 +64,21 @@ class ProcessingService:
             cur.execute(CREATE_TABLE_SQL)
         self.connection.commit()
 
+    def ensure_connection(self):
+        if self.connection is None or self.connection.closed:
+            logger.warning("Db connection lost, reconnecting...")
+            self.connection = self.connect()
+
 
     def insert_score(self, msg: dict):
+        self.ensure_connection()
         try:
             with self.connection.cursor() as cur:
-                cur.execute(INSERT_SQL, (
-                    msg["transaction_id"],
-                    float(msg["score"]),
-                    bool(msg["fraud_flag"]),
-                ))
+                cur.execute(INSERT_SQL, (msg["transaction_id"], msg["score"], msg["fraud_flag"]))
             self.connection.commit()
+        except psycopg.OperationalError:
+            self.connection.close()              
+            raise
         except Exception:
             self.connection.rollback()
             raise
@@ -87,13 +93,26 @@ class ProcessingService:
                 logger.error(f"Kafka error: {msg.error()}")
                 continue
             try:
-                # Десериализация JSON
-                data = json.loads(msg.value().decode('utf-8'))[0]
+                raw = json.loads(msg.value().decode('utf-8'))[0]
+                data = {
+                    "transaction_id": str(raw["transaction_id"]),
+                    "score": float(raw["score"]),
+                    "fraud_flag": bool(raw["fraud_flag"]),
+                }
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                logger.error(f"Bad message, skipping: {e}")
+                self.consumer.commit(message=msg)
+                continue
 
-                self.insert_score(data)
-                logger.info(f"Message processed: {data["transaction_id"]}")
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
+            while True:
+                try:
+                    self.insert_score(data)
+                    break
+                except (psycopg.OperationalError, RuntimeError) as e:
+                    logger.error(f"DB unavailable, retrying in 2s: {e}")
+                    time.sleep(2)
+            self.consumer.commit(message=msg)
+            logger.info(f"Message processed: {data['transaction_id']}")
 
 
 if __name__ == "__main__":

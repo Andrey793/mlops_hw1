@@ -1,145 +1,69 @@
-# Real-Time Fraud Detection System
+# Real-Time Fraud Detection + Airflow retraining
 
-Система потокового скоринга транзакций на мошенничество: транзакции поступают в Kafka, ML-сервис их скорит, результаты сохраняются в PostgreSQL и отображаются в веб-интерфейсе.
+`transaction_simulator` шлёт транзакции в Kafka, `fraud_detector` скорит их CatBoost-моделью, `writer` пишет результат в Postgres (таблица `scores`). Airflow каждые 5 минут пополняет размеченные данные и переобучает модель. Новая версия попадает в прод, только если она лучше текущей.
 
-## 🏗️ Архитектура
+## Запуск
 
-```
-interface ──▶ [transactions] ──▶ fraud_detector ──▶ [scoring] ──▶ writer ──▶ PostgreSQL
-    ▲                                                                            │
-    └──────────────────────────── Check results ◀────────────────────────────────┘
-```
+Нужны Docker Compose v2 и `train.csv` из [teta-ml-1-2025](https://www.kaggle.com/competitions/teta-ml-1-2025).
 
-Компоненты системы:
-1. **`interface`** (Streamlit UI):
-
-   Создан для удобной симуляции потоковых данных с транзакциями. Реальный продукт использовал бы прямой поток данных из других систем.
-    - Имитирует отправку транзакций в Kafka через CSV-файлы.
-    - Генерирует уникальные ID для транзакций.
-    - Загружает транзакции отдельными сообщениями формата JSON в топик kafka `transactions`.
-    - По кнопке **Check results** читает результаты из PostgreSQL:
-      - выводит таблицу последних 10 транзакций с `fraud_flag = TRUE`;
-      - строит гистограмму скоров последних 100 транзакций.
-
-2. **`fraud_detector`** (ML Service):
-   - Загружает предобученную модель CatBoost (`models/model.cbm`).
-   - Выполняет препроцессинг данных:
-     - Извлечение временных признаков
-   - Производит скоринг с порогом 0.98.
-   - Выгружает результат скоринга в топик kafka `scoring`.
-
-3. **`writer`** (DB Writer):
-   - Читает результаты скоринга из топика `scoring`.
-   - Записывает их в таблицу `scores` базы PostgreSQL (повторные `transaction_id` игнорируются).
-
-4. **`postgres`** (PostgreSQL 16):
-   - База `scoring`, пользователь `writer` / пароль `pass`, порт 5432.
-
-5. **Kafka Infrastructure**:
-   - Zookeeper + Kafka брокер
-   - `kafka-setup`: автоматически создает топики `transactions` и `scoring`
-   - Kafka UI: веб-интерфейс для мониторинга сообщений (порт 8080)
-
-Порядок запуска контролируется через `depends_on` с условиями: `writer` стартует только после того, как Kafka и PostgreSQL прошли healthcheck, а `kafka-setup` успешно создал топики.
-
-## 🚀 Быстрый старт
-
-### Требования
-- Docker Engine 20.10+
-- Docker Compose v2 (команда `docker compose`)
-
-### Запуск
 ```bash
-git clone https://github.com/NikitaMalykhin/mts25_mlops_hw2_real_time_fraud_detection.git
-cd mts25_mlops_hw2_real_time_fraud_detection
-
-# Сборка и запуск всех сервисов
-docker compose up --build
-```
-После запуска:
-- **Streamlit UI**: http://localhost:8501
-- **Kafka UI**: http://localhost:8080
-- **PostgreSQL**: `postgresql://writer:pass@localhost:5432/scoring`
-- **Логи сервисов**:
-  ```bash
-  docker compose logs <service_name>  # Например: fraud_detector, writer, interface, kafka
-  ```
-
-## 🛠️ Использование
-
-### 1. Загрузка данных:
-
- - Загрузите CSV через интерфейс Streamlit и нажмите кнопку отправки. Для тестирования работы проекта используется файл формата `test.csv` из соревнования https://www.kaggle.com/competitions/teta-ml-1-2025
- - Пример структуры данных:
-    ```csv
-    transaction_time,amount,lat,lon,merchant_lat,merchant_lon,gender,...
-    2023-01-01 12:30:00,150.50,40.7128,-74.0060,40.7580,-73.9855,M,...
-    ```
- - Для первых тестов рекомендуется загружать небольшой семпл данных (до 100 транзакций) за раз, чтобы исполнение кода не заняло много времени.
-
-### 2. Просмотр результатов:
- - Нажмите **Check results** в интерфейсе Streamlit — появятся последние 10 мошеннических транзакций и гистограмма скоров последних 100 транзакций.
-
-### 3. Мониторинг:
- - **Kafka UI**: Просматривайте сообщения в топиках `transactions` и `scoring`
- - **Логи обработки**:
-   - `/app/logs/service.log` внутри контейнера `fraud_detector`
-   - `/writer/logs/service.log` внутри контейнера `writer`
-
-### 4. Формат результатов:
-
- - Скоринговые оценки пишутся в топик `scoring` в формате:
-    ```json
-    {
-    "score": 0.995,
-    "fraud_flag": 1,
-    "transaction_id": "d6b0f7a0-8e1a-4a3c-9b2d-5c8f9d1e2f3a"
-    }
-    ```
- - `writer` сохраняет их в таблицу `scores`:
-    ```sql
-    CREATE TABLE scores (
-        id             BIGSERIAL PRIMARY KEY,      -- порядок поступления
-        transaction_id TEXT UNIQUE NOT NULL,
-        score          DOUBLE PRECISION NOT NULL,
-        fraud_flag     BOOLEAN NOT NULL
-    );
-    ```
-
-## Структура проекта
-```
-.
-├── fraud_detector/
-│   ├── app/
-│   │   └── app.py              # Kafka Consumer/Producer
-│   ├── src/
-│   │   ├── preprocessing.py    # Логика препроцессинга
-│   │   └── scorer.py           # ML-модель и предсказания
-│   ├── models/
-│   │   └── model.cbm           # Предобученная модель CatBoost
-│   ├── requirements.txt
-│   └── Dockerfile
-├── writer/
-│   ├── write.py                # Kafka Consumer → PostgreSQL
-│   ├── requirements.in
-│   ├── requirements.txt
-│   └── Dockerfile
-├── interface/
-│   ├── .streamlit/config.toml  # Конфигурация Streamlit
-│   ├── app.py                  # Streamlit UI
-│   ├── requirements.txt
-│   └── Dockerfile
-├── docker-compose.yaml
-└── README.md
+cp .env.example .env                  # укажите TRAIN_DATA_CSV=/abs/path/to/train.csv и JWT_SECRET
+echo "AIRFLOW_UID=$(id -u)" >> .env   # Linux/WSL: права на ./logs
+docker compose up --build -d
+docker compose ps                     # data_loader и airflow-init — Exited (0), остальные — running
 ```
 
-## Настройки Kafka
-```yml
-Топики:
-- transactions (входные данные)
-- scoring (результаты скоринга)
+- **Airflow UI:** http://localhost:8081, логин и пароль `airflow` / `airflow`
+- **Kafka UI:** http://localhost:8080
 
-Репликация: 1 (для разработки)
-Партиции: 3
-Хранение: 7 дней (retention.ms=604800000)
+## DAG'и
+
+В Airflow UI включите оба DAG'а: они создаются на паузе.
+
+- **`update_dataset`** запускается каждые 5 минут, или сразу по кнопке **Trigger**. Он берёт выборку из витрины, сдвигает её даты на следующий месяц, удаляет данные старше 3 лет и дописывает батч в `labeled_transactions`.
+- **`retrain_catboost`** стартует сам после каждого `update_dataset`. Задачи: `load_data` → `preproc` → `train` → `publish`.
+
+## Проверка, что скорит опубликованная модель
+
+```bash
+# 1. транзакции скорятся: count растёт
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM scores;"'
+
+# 2. результат последнего обучения (то же видно в логе задачи publish в Airflow UI)
+docker compose exec fraud_detector cat /app/models/test_auc.json
+#    в логе publish: "... Model saved to /models/model.cbm" или "... Model not saved"
+
+# 3. fraud_detector скорит опубликованной версией: version в логе = version в model_meta.json
+docker compose logs fraud_detector | grep "Loaded model" | tail -1
+docker compose exec fraud_detector cat /app/models/model_meta.json
 ```
+
+`publish` при каждой публикации пишет `model_meta.json` с версией и AUC. `fraud_detector` перед скорингом проверяет, менялись ли `model.cbm` и `model_meta.json`, и перечитывает модель. Каждая публикация даёт новую строку `Loaded model ... (version ...)`. Если модель отклонена, новой строки не будет. `version baseline` — стартовая модель, которую ещё ничего не заменило.
+
+## Когда модель публикуется
+
+Окно обучения — 4 последних месяца (`TRAINING_WINDOW_MONTHS`), на каждом запуске сдвигается на месяц вперёд. Делится **по времени**:
+
+| месяцы M-3, M-2 | месяц M-1 | месяц M (новый) |
+|---|---|---|
+| train | validation (early stopping) | test |
+
+`train` считает **ROC AUC на месяце M** и для кандидата, и для текущей прод-модели. `publish` атомарно (`os.replace`) подменяет `model.cbm`, только если `auc_new > auc_old`.
+
+Исключение — стартовая модель (`fraud_detector/app/baseline/model.cbm`). Она обучена на всём `train.csv`, включая тестовые месяцы, поэтому её AUC завышен утечкой (≈0.999) и с кандидатом несравним. Пока в проде стоит она (нет `model_meta.json`), первый кандидат публикуется без сравнения. Дальше модели сравниваются только с теми, что опубликовал пайплайн.
+
+Почему так:
+- **Одна выборка для обеих моделей.** AUC на разных месяцах сравнивать нельзя.
+- **Месяц M не видела ни одна из моделей.** Прод обучалась до его появления, у кандидата он отложен.
+- **Тест — будущее относительно train**, как и в проде.
+- **Early stopping идёт на M-1, а не на тесте**, иначе AUC кандидата завышен.
+- **ROC AUC не зависит от порога** (0.98) и устойчив к дисбалансу классов.
+
+Что можно улучшить:
+- добавить PR AUC и recall при пороге 0.98;
+- требовать прирост больше бутстреп-шума, а не просто «> 0»;
+- писать версию модели в `scores`.
+
+## Остановка
+
+`docker compose down`, с удалением данных: `docker compose down -v`. Удаление данных нужно и после смены логина/пароля Postgres в `.env`.
