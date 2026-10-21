@@ -132,20 +132,6 @@ services:
     restart: unless-stopped
 
 
-
-  # interface:
-  #   build: ./interface
-  #   networks:
-  #     - ml-scorer
-  #   environment:
-  #     KAFKA_BROKERS: "kafka:19092"  # Используем внутренний адрес Kafka
-  #     KAFKA_TOPIC: "transactions"
-  #     DATABASE_URL: postgresql://writer:pass@postgres:5432/scoring
-  #   depends_on:
-  #     - writer
-  #   ports:
-  #     - "8501:8501"
-
   postgres:
     image: postgres:16
     environment:
