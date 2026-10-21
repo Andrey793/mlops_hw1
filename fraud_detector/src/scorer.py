@@ -20,6 +20,8 @@ def make_pred(dt, source_info="kafka"):
 
     print(dt.dtypes)
 
+    dt = dt[model.feature_names_].copy()
+
     # Меняем формат категориальных фичей на string перед скорингом
     cat_cols = ['gender', 'merch', 'cat_id', 'one_city', 'us_state', 'jobs', 'street', 'name']
     for col in cat_cols:
