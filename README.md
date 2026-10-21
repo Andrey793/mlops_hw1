@@ -40,15 +40,15 @@ docker compose ps                     # data_loader и airflow-init — Exited (
 ## Проверка, что скорит опубликованная модель
 
 ```bash
-# 2. результат последнего обучения (то же видно в логе задачи publish в Airflow UI)
+# 1. результат последнего обучения (то же видно в логе задачи publish в Airflow UI)
 docker compose exec fraud_detector cat /app/models/test_auc.json
 
-# 3. fraud_detector скорит опубликованной версией: version в логе = version в model_meta.json
+# 2. fraud_detector скорит опубликованной версией: version в логе = version в model_meta.json
 docker compose logs fraud_detector | grep "Loaded model" | tail -1
 docker compose exec fraud_detector cat /app/models/model_meta.json
 ```
 
-`publish` при каждой публикации пишет `model_meta.json` с версией и AUC. `fraud_detector` перед скорингом проверяет, менялись ли `model.cbm` и `model_meta.json`, и перечитывает модель. Каждая публикация даёт новую строку `Loaded model ... (version ...)`. Если модель отклонена, новой строки не будет. `version baseline` — стартовая модель, которую ещё ничего не заменило.
+`publish` при каждой публикации пишет `model_meta.json` с версией и AUC. `fraud_detector` перед скорингом проверяет, менялись ли `model.cbm` и `model_meta.json`, и перечитывает модель. Версия модели для каждого скора передается в Kafka.
 
 ## Когда модель публикуется
 
