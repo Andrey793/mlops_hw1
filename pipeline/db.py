@@ -17,7 +17,6 @@ CURRENT_DATASET = TRAINING_DIR / "current.parquet"
 CURRENT_DATASET_PROC = TRAINING_DIR / "current_proc.parquet"
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 50000))
 EXPIRE_LIMIT = int(os.getenv("EXPIRE_LIMIT", 3)) #years
-# окно обучения в месяцах: последний — test, предпоследний — validation, остальные — train
 TRAINING_WINDOW_MONTHS = int(os.getenv("TRAINING_WINDOW_MONTHS", 4))
 BATCH_DIR = Path(os.getenv("BATCH_DATA_DIR", "/batch_data"))
 BATCH_PATH = BATCH_DIR / "batch.parquet"
@@ -26,6 +25,8 @@ TEST_AUC_PATH = MODEL_DIR / "test_auc.json"
 MODEL_PATH = MODEL_DIR / "model.cbm"
 # есть только у моделей, опубликованных пайплайном
 MODEL_META_PATH = MODEL_DIR / "model_meta.json"
+REPORT_DIR = Path(os.getenv("REPORT_DIR", "/reports"))
+REPORT_PATH = REPORT_DIR / "index.html"
 
 
 COLUMNS = [

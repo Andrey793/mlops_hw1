@@ -15,23 +15,33 @@ docker compose ps                     # data_loader и airflow-init — Exited (
 
 - **Airflow UI:** http://localhost:8081, логин и пароль `airflow` / `airflow`
 - **Kafka UI:** http://localhost:8080
+- **Data Quality отчёт:** http://localhost:8090
 
 ## DAG'и
 
-В Airflow UI включите оба DAG'а: они создаются на паузе.
+В Airflow UI включите все три DAG'а: они создаются на паузе.
 
 - **`update_dataset`** запускается каждые 5 минут, или сразу по кнопке **Trigger**. Он берёт выборку из витрины, сдвигает её даты на следующий месяц, удаляет данные старше 3 лет и дописывает батч в `labeled_transactions`.
 - **`retrain_catboost`** стартует сам после каждого `update_dataset`. Задачи: `load_data` → `preproc` → `train` → `publish`.
+- **`data_quality`** тоже стартует после каждого `update_dataset` и проверяет таблицу `labeled_transactions`. Каждое правило — отдельная задача, они идут параллельно, а `report` собирает результаты в HTML-отчёт.
+
+## Data Quality
+
+| Правило | Задача | Что проверяется |
+|---|---|---|
+| Уникальность | `uniqueness` | в таблице нет полностью одинаковых строк (например, после повторного `add_batch`) |
+| Полнота | `completeness` | ни в одной колонке нет `NULL` |
+| Валидность | `validity` | `amount > 0`, `target ∈ {0, 1}`, координаты клиента и мерчанта в допустимых диапазонах, `population_city > 0` |
+| Непрерывность | `continuity` | между первым и последним месяцем нет месяцев без данных |
+| Срок хранения | `retention` | нет записей старше `EXPIRE_LIMIT` лет (проверяет работу `filter_db`) |
+
+Правила лежат в `pipeline/quality/checks.py`. Каждая функция возвращает `{"check", "passed", "details"}`, задача `report` (`pipeline/quality/report.py`) собирает их в `index.html` и атомарно (`os.replace`) подменяет файл в `./report`. Сервис `report` (nginx) отдаёт эту папку на http://localhost:8090. При старте контейнера отчёт сбрасывается в заглушку, а страница сама обновляется каждые 30 секунд.
 
 ## Проверка, что скорит опубликованная модель
 
 ```bash
-# 1. транзакции скорятся: count растёт
-docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM scores;"'
-
 # 2. результат последнего обучения (то же видно в логе задачи publish в Airflow UI)
 docker compose exec fraud_detector cat /app/models/test_auc.json
-#    в логе publish: "... Model saved to /models/model.cbm" или "... Model not saved"
 
 # 3. fraud_detector скорит опубликованной версией: version в логе = version в model_meta.json
 docker compose logs fraud_detector | grep "Loaded model" | tail -1
@@ -51,18 +61,6 @@ docker compose exec fraud_detector cat /app/models/model_meta.json
 `train` считает **ROC AUC на месяце M** и для кандидата, и для текущей прод-модели. `publish` атомарно (`os.replace`) подменяет `model.cbm`, только если `auc_new > auc_old`.
 
 Исключение — стартовая модель (`fraud_detector/app/baseline/model.cbm`). Она обучена на всём `train.csv`, включая тестовые месяцы, поэтому её AUC завышен утечкой (≈0.999) и с кандидатом несравним. Пока в проде стоит она (нет `model_meta.json`), первый кандидат публикуется без сравнения. Дальше модели сравниваются только с теми, что опубликовал пайплайн.
-
-Почему так:
-- **Одна выборка для обеих моделей.** AUC на разных месяцах сравнивать нельзя.
-- **Месяц M не видела ни одна из моделей.** Прод обучалась до его появления, у кандидата он отложен.
-- **Тест — будущее относительно train**, как и в проде.
-- **Early stopping идёт на M-1, а не на тесте**, иначе AUC кандидата завышен.
-- **ROC AUC не зависит от порога** (0.98) и устойчив к дисбалансу классов.
-
-Что можно улучшить:
-- добавить PR AUC и recall при пороге 0.98;
-- требовать прирост больше бутстреп-шума, а не просто «> 0»;
-- писать версию модели в `scores`.
 
 ## Остановка
 

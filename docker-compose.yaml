@@ -1,5 +1,4 @@
 x-airflow-common: &airflow-common
-  # образ собирается один раз в airflow-init, остальные сервисы его переиспользуют
   image: hw1-airflow:local
   pull_policy: never
   networks:
@@ -23,6 +22,7 @@ x-airflow-common: &airflow-common
     POSTGRES_USER: ${POSTGRES_USER}
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     PYTHONPATH: /opt/airflow/
+    REPORT_DIR: /opt/airflow/report
 
   volumes:
     - ./dags:/opt/airflow/dags
@@ -34,6 +34,7 @@ x-airflow-common: &airflow-common
     - training_data:/training_data
     - batch_data:/batch_data
     - ./shared:/opt/airflow/shared:ro
+    - ./report:/opt/airflow/report
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
@@ -247,7 +248,7 @@ services:
       - |
         set -e
         mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        chown -R "${AIRFLOW_UID:-50000}:0" /models /batch_data /training_data /opt/airflow/{logs,dags,plugins,config}
+        chown -R "${AIRFLOW_UID:-50000}:0" /models /batch_data /training_data /opt/airflow/{logs,dags,plugins,config,report}
         /entrypoint airflow version
     environment:
       <<: *airflow-common-env
@@ -320,6 +321,29 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+
+  report:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./report:/usr/share/nginx/html
+    ports:
+      - "8090:80"
+    networks:
+      - ml-scorer
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        cat > /usr/share/nginx/html/index.html <<'EOF'
+        <!doctype html><html><head><meta charset="utf-8">
+        <meta http-equiv="refresh" content="30"><title>Data Quality</title></head>
+        <body><h1>Data Quality: labeled_transactions</h1>
+        <p>Проверки ещё не запускались.</p></body></html>
+        EOF
+        exec nginx -g 'daemon off;'
+
+
 
     
 networks:

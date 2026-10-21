@@ -12,7 +12,6 @@ def load_dataset():
             (next_batch_month,) = cur.fetchone()
         month_start = pd.Timestamp(next_batch_month)
         month_end = month_start + pd.DateOffset(months=1)
-        # окно — TRAINING_WINDOW_MONTHS месяцев, заканчивая новым месяцем
         new_start = month_start - pd.DateOffset(months=db.TRAINING_WINDOW_MONTHS - 1)
 
         df = pd.read_parquet(db.CURRENT_DATASET)
