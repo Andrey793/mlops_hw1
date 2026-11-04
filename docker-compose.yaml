@@ -23,6 +23,7 @@ x-airflow-common: &airflow-common
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     PYTHONPATH: /opt/airflow/
     REPORT_DIR: /opt/airflow/report
+    MLFLOW_TRACKING_URI: http://mlflow:5000
 
   volumes:
     - ./dags:/opt/airflow/dags
@@ -329,6 +330,22 @@ services:
         EOF
         exec nginx -g 'daemon off;'
 
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.2
+    networks:
+      - ml-scorer
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --allowed-hosts mlflow:5000,localhost:5000,127.0.0.1:5000
+    restart: unless-stopped
+
 
 
     
@@ -343,3 +360,4 @@ volumes:
   training_data:
   airflow-postgres-data:
   batch_data:
+  mlflow_data:

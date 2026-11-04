@@ -1,12 +1,14 @@
-Репозиторий состоит из 2х веток.
+Репозиторий состоит из 3х веток.
 
 Main: первая простая версия только с Kafka и интерфейсом.
 
 Airflow: Вторая версия с добавлением DAG для переобучения и обновления датасета.
 
+Spark: Третья версия, в которой обучающую выборку для переобучения собирает Spark, а обучения и версии моделей записываются в MLflow.
+
 # Real-Time Fraud Detection + Airflow retraining
 
-`transaction_simulator` шлёт транзакции в Kafka, `fraud_detector` скорит их CatBoost-моделью, `writer` пишет результат в Postgres (таблица `scores`). Airflow каждые 5 минут пополняет размеченные данные и переобучает модель. Новая версия попадает в прод, только если она лучше текущей.
+`transaction_simulator` шлёт транзакции в Kafka, `fraud_detector` скорит их CatBoost-моделью, `writer` пишет результат в Postgres (таблица `scores`). Airflow каждые 5 минут пополняет размеченные данные и переобучает модель. Обучающую выборку (окно + признаки) собирает Spark. Новая версия попадает в прод, только если она лучше текущей.
 
 ## Запуск
 
@@ -22,14 +24,33 @@ docker compose ps                     # data_loader и airflow-init — Exited (
 - **Airflow UI:** http://localhost:8081, логин и пароль `airflow` / `airflow`
 - **Kafka UI:** http://localhost:8080
 - **Data Quality отчёт:** http://localhost:8090
+- **MLflow UI:** http://localhost:5000
 
 ## DAG'и
 
 В Airflow UI включите все три DAG'а: они создаются на паузе.
 
 - **`update_dataset`** запускается каждые 5 минут, или сразу по кнопке **Trigger**. Он берёт выборку из витрины, сдвигает её даты на следующий месяц, удаляет данные старше 3 лет и дописывает батч в `labeled_transactions`.
-- **`retrain_catboost`** стартует сам после каждого `update_dataset`. Задачи: `load_data` → `preproc` → `train` → `publish`.
+- **`retrain_catboost`** стартует сам после каждого `update_dataset`. Задачи: `build_dataset` (Spark: окно обучения + признаки) → `train` → `publish`.
 - **`data_quality`** тоже стартует после каждого `update_dataset` и проверяет таблицу `labeled_transactions`. Каждое правило — отдельная задача, они идут параллельно, а `report` собирает результаты в HTML-отчёт.
+
+## Spark
+
+Задача `build_dataset` собирает обучающую выборку на Spark (`local[*]` внутри контейнера Airflow, отдельного кластера нет): читает новый месяц из Postgres через JDBC, объединяет с окном из `current.parquet` и считает признаки в `current_proc.parquet`. Дальше `train` работает с ним pandas'ом. Сессия создаётся в `pipeline/spark.py`, Java и JDBC-драйвер добавлены в `airflow/Dockerfile`.
+
+Признаки в Spark должны совпадать с `shared/preproc.py`, которым считает `fraud_detector`. Это проверяет `tests/test_preproc_parity.py`:
+
+```bash
+docker compose run --rm --no-deps -v ./tests:/opt/airflow/tests airflow-scheduler bash -c \
+  "/opt/airflow/dag-venv/bin/pip install -q --target /tmp/pt pytest; cd /opt/airflow && \
+   PYTHONPATH=/opt/airflow:/tmp/pt /opt/airflow/dag-venv/bin/python -m pytest tests -v"
+```
+
+## MLflow
+
+Каждый запуск `train` пишется в эксперимент `fraud_retrain`: гиперпараметры, окно обучения (`window_start`/`window_end`), размеры выборок, метрики `auc_new` и `auc_old` и сама модель. Видна история всех переобучений, включая модели, которые не прошли в прод.
+
+`publish` при публикации регистрирует модель в registry как `fraud_detector` и вешает на неё alias `champion`. Registry — источник правды о прод-модели, а `model.cbm` в volume — способ доставить её в `fraud_detector`, который по-прежнему от MLflow не зависит. Откат: перевесить `champion` на прошлую версию и выгрузить её `model.cbm`.
 
 ## Data Quality
 
@@ -54,7 +75,7 @@ docker compose logs fraud_detector | grep "Loaded model" | tail -1
 docker compose exec fraud_detector cat /app/models/model_meta.json
 ```
 
-`publish` при каждой публикации пишет `model_meta.json` с версией и AUC. `fraud_detector` перед скорингом проверяет, менялись ли `model.cbm` и `model_meta.json`, и перечитывает модель. Версия модели для каждого скора передается в Kafka.
+`publish` при каждой публикации пишет `model_meta.json` с версией из registry (`v<N>`), `run_id` и AUC. `fraud_detector` перед скорингом проверяет, менялись ли `model.cbm` и `model_meta.json`, и перечитывает модель. Версия модели для каждого скора передается в Kafka.
 
 ## Когда модель публикуется
 

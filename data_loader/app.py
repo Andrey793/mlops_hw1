@@ -225,7 +225,7 @@ def materialize_window(conn):
         conn,
         params=(window_start, end_exclusive.to_pydatetime()),
     )
-    frame.to_parquet(CURRENT_DATASET, index=False)
+    frame.to_parquet(CURRENT_DATASET, index=False, coerce_timestamps="us", allow_truncated_timestamps=True)
     os.chmod(CURRENT_DATASET, 0o666)
     logger.info(
         "Исходный датасет обучения: %s строк, %s — %s, файл %s",

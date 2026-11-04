@@ -9,14 +9,9 @@ labeled_data = Asset("labeled_transactions")
         "retry_delay": timedelta(minutes=1)}, max_active_runs=1)
 def retrain_catboost():
     @task.external_python(python=VENV, expect_airflow=False)
-    def load_dataset_t():
-        from pipeline.retrain.load_data import load_dataset
-        load_dataset()
-
-    @task.external_python(python=VENV, expect_airflow=False)
-    def preproc_t():
-        from pipeline.retrain.preproc import preproc
-        preproc()
+    def build_dataset_t():
+        from pipeline.retrain.preproc import build_dataset
+        build_dataset()
 
     @task.external_python(python=VENV, expect_airflow=False)
     def train_t():
@@ -28,6 +23,6 @@ def retrain_catboost():
         from pipeline.retrain.publish import publish
         publish()
 
-    load_dataset_t() >> preproc_t() >> train_t() >> publish_t()
+    build_dataset_t() >> train_t() >> publish_t()
 
 retrain_catboost()

@@ -4,3 +4,5 @@ psycopg2-binary
 pyarrow
 scikit-learn
 pendulum
+pyspark
+mlflow-skinny==3.17.2
