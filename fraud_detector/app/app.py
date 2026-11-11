@@ -7,9 +7,11 @@ import json
 
 from confluent_kafka import Consumer, Producer
 from shared.preproc import run_preproc
+from prometheus_client import Counter, Gauge, Histogram, Summary, start_http_server
+
 
 sys.path.append(os.path.abspath('./src'))
-from scorer import make_pred, MODEL_PATH
+from scorer import make_pred, get_model, MODEL_PATH
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,7 +28,13 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
 TRANSACTIONS_TOPIC = os.getenv("KAFKA_TRANSACTIONS_TOPIC", "transactions")
 SCORING_TOPIC = os.getenv("KAFKA_SCORING_TOPIC", "scoring")
 BASELINE_MODEL_PATH = os.getenv("BASELINE_MODEL_PATH", "/app/app/baseline/model.cbm")
+METRICS_PORT = int(os.getenv("METRICS_PORT", 8080))
 
+transactions_total = Counter('total_transactions', "Total number of transactions")
+processing_time = Summary('transaction_time', "Time spent processing")
+scoring_hist = Histogram('transaction_scoring', "Histogram of transaction scores", buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+fraud_ratio = Gauge('fraud_ratio', "Ratio of fraud transactions")
+processing_errors = Counter('processing_errors', "Messages that failed processing", ['error_type'])
 
 def ensure_model():
     """Кладёт базовую модель в общий volume, если обученной модели там ещё нет."""
@@ -52,7 +60,9 @@ class ProcessingService:
         self.consumer = Consumer(self.consumer_config)
         self.consumer.subscribe([TRANSACTIONS_TOPIC])
         self.producer = Producer(self.producer_config)
-
+        start_http_server(METRICS_PORT)
+        self.fraud_trans = 0
+        self.total_trans = 0
 
     def process_messages(self):
         while True:
@@ -67,12 +77,18 @@ class ProcessingService:
 
                 transaction_id = data['transaction_id']
                 input_df = pd.DataFrame([data['data']])
-
-                processed_df = run_preproc(input_df)
-                submission = make_pred(processed_df, "kafka_stream")
+                with processing_time.time():
+                    processed_df = run_preproc(input_df)
+                    submission = make_pred(processed_df, "kafka_stream")
 
                 submission['transaction_id'] = transaction_id
-
+                score = float(submission['score'].iloc[0])
+                fraud = int(submission['fraud_flag'].iloc[0])
+                transactions_total.inc()
+                self.total_trans += 1
+                scoring_hist.observe(score)
+                self.fraud_trans += fraud
+                fraud_ratio.set(self.fraud_trans / self.total_trans)
                 self.producer.produce(
                     SCORING_TOPIC,
                     value=submission.to_json(orient='records')
@@ -80,12 +96,14 @@ class ProcessingService:
                 self.producer.flush()
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
+                processing_errors.labels(error_type=type(e).__name__).inc()
             self.consumer.commit(message=msg)
 
 
 if __name__ == "__main__":
     logger.info('Starting Kafka ML scoring service...')
     ensure_model()
+    get_model()  
     service = ProcessingService()
     try:
         service.process_messages()

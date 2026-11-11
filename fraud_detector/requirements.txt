@@ -38,6 +38,8 @@ pillow==11.2.1
     # via matplotlib
 plotly==6.1.1
     # via catboost
+prometheus-client==0.26.0
+    # via -r requirements.in
 pyparsing==3.2.3
     # via matplotlib
 python-dateutil==2.9.0.post0

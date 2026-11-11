@@ -3,9 +3,14 @@ import logging
 from catboost import CatBoostClassifier
 import os
 import json
+from prometheus_client import Counter, Gauge
 
 # Настройка логгера
 logger = logging.getLogger(__name__)
+
+model_info = Gauge('model_info', 'Currently loaded model version', ['version'])
+# exposed as model_loads_total{version="..."}
+model_loads = Counter('model_loads', 'Model file (re)loads by loaded version', ['version'])
 
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/model.cbm")
 MODEL_META_PATH = os.path.join(os.path.dirname(MODEL_PATH), "model_meta.json")
@@ -32,7 +37,10 @@ def get_model():
         m = CatBoostClassifier()
         m.load_model(MODEL_PATH)
         _model, _mtime, _version = m, mtime, model_version()
-        logger.info("Loaded model %s (version %s, mtime %s)", MODEL_PATH, model_version(), mtime)
+        model_info.clear()
+        model_info.labels(version=str(_version)).set(1)
+        model_loads.labels(version=str(_version)).inc()
+        logger.info("Loaded model %s (version %s, mtime %s)", MODEL_PATH, _version, mtime)
     return _model
 
 # Define optimal threshold

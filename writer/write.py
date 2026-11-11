@@ -4,7 +4,11 @@ import json
 import psycopg
 import time
 from confluent_kafka import Consumer
-
+from prometheus_client import Counter, Gauge, Histogram, Summary, start_http_server
+scores_total = Counter('scores_total', "Total number of scores")
+write_time = Summary("write_time", "Time spent writing")
+fraud_total = Counter('fraud_total', "Total number of frauds")
+scores_hist = Histogram('score_distribution', "Histogram of scores", buckets=[0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1])
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +24,7 @@ logger = logging.getLogger(__name__)
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:19092")
 SCORING_TOPIC = os.getenv("KAFKA_SCORING_TOPIC", "scoring")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://writer:pass@postgres:5432/scoring")
+METRICS_PORT = int(os.getenv("METRICS_PORT", 8081))
 
 
 CREATE_TABLE_SQL = """
@@ -50,6 +55,7 @@ class ProcessingService:
         self.consumer.subscribe([SCORING_TOPIC])
         self.connection = self.connect()
         self.init_db()
+        start_http_server(METRICS_PORT)
 
     def connect(self, retries=10, delay=2):
         for _ in range(retries):
@@ -70,6 +76,7 @@ class ProcessingService:
             self.connection = self.connect()
 
 
+    @write_time.time()
     def insert_score(self, msg: dict):
         self.ensure_connection()
         try:
@@ -83,7 +90,6 @@ class ProcessingService:
             self.connection.rollback()
             raise
         
-
     def process_messages(self):
         while True:
             msg = self.consumer.poll(1.0)
@@ -99,6 +105,9 @@ class ProcessingService:
                     "score": float(raw["score"]),
                     "fraud_flag": bool(raw["fraud_flag"]),
                 }
+                scores_hist.observe(data["score"])
+                scores_total.inc()
+                fraud_total.inc() if data["fraud_flag"] else None
             except (ValueError, KeyError, IndexError, TypeError) as e:
                 logger.error(f"Bad message, skipping: {e}")
                 self.consumer.commit(message=msg)

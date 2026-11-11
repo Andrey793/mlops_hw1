@@ -123,6 +123,7 @@ services:
       KAFKA_SCORING_TOPIC: "scoring"
       MODEL_PATH: /app/models/model.cbm
       PYTHONPATH: /app
+      METRICS_PORT: "8080"
     volumes:
       - models:/app/models
       - ./shared:/app/shared:ro
@@ -158,6 +159,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
       KAFKA_SCORING_TOPIC: "scoring"
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      METRICS_PORT: "8081"
     depends_on:
       kafka:
         condition: service_healthy
@@ -330,6 +332,47 @@ services:
         exec nginx -g 'daemon off;'
 
 
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro
+    restart: unless-stopped
+    expose:
+      - 9100
+    networks:
+      - ml-scorer
+
+  prometheus:
+    image: prom/prometheus:v3.5.4
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - ml-scorer
+
+  grafana:
+    image: grafana/grafana:12.4
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin 
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - ml-scorer
 
     
 networks:
@@ -343,3 +386,5 @@ volumes:
   training_data:
   airflow-postgres-data:
   batch_data:
+  prometheus-data:
+  grafana-data:

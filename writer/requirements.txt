@@ -2,6 +2,8 @@
 #    uv pip compile requirements.in --python-version 3.12 --python-platform linux -o requirements.txt
 confluent-kafka==2.15.1
     # via -r requirements.in
+prometheus-client==0.26.0
+    # via -r requirements.in
 psycopg==3.3.6
     # via -r requirements.in
 psycopg-binary==3.3.6
